@@ -1,0 +1,228 @@
+const ss = SpreadsheetApp.getActive();
+const indexSheet = ss.getSheetByName('Index');
+const espnUrlStub = 'https://site.api.espn.com/apis/site/v2/sports/'
+const thisYear = Utilities.formatDate(new Date(), "PST", "yyyy");
+
+class Game {
+  constructor(gameId, season, date, homeTeam, awayTeam, homeScore, awayScore, winner, loser, matchup, note) {
+    this.gameId = gameId;
+    this.season = season;
+    this.date = date;
+    this.homeTeam = homeTeam;
+    this.awayTeam = awayTeam;
+    this.homeScore = homeScore;
+    this.awayScore = awayScore;
+    this.winner = winner;
+    this.loser = loser;
+    this.matchup = matchup;
+    this.note = note;
+  }
+}
+
+function wbbSimple() {
+  const sportStub = espnUrlStub + 'basketball/womens-college-basketball/';
+  const tabName = 'WBB';
+  let year = new Date()
+  year = year.getFullYear();
+  const startYear = year -1
+  anySport(sportStub,tabName,startYear);
+}
+
+
+function mbbSimple() {
+  const sportStub = espnUrlStub + 'basketball/mens-college-basketball/';
+  const tabName = 'MBB';
+  let year = new Date()
+  year = year.getFullYear();
+  const startYear = year -1
+  anySport(sportStub,tabName,startYear);
+}
+
+function footballSimple() {
+  const sportStub = espnUrlStub + 'football/college-football/';
+  const tabName = 'Football';
+  let year = new Date()
+  year = year.getFullYear();
+  const startYear = year -1
+  anySport(sportStub,tabName,startYear);
+}
+
+function anySport(sportStub,tabName,startYear) {
+
+  const scoreSheet = ss.getSheetByName(tabName);
+  const teamSheet = ss.getSheetByName('Index');
+
+  const teamList = teamSheet.getRange(2, 2, teamSheet.getLastRow() - 1, 3).getValues();
+  const teamIdList = teamSheet.getRange(2,3,teamSheet.getLastRow() - 1, 1).getValues();
+  const teamAbbrevList = teamSheet.getRange(2,2,teamSheet.getLastRow() - 1, 1).getValues();
+
+  let existingGames = scoreSheet.getRange(2,1,scoreSheet.getLastRow()-1,scoreSheet.getLastColumn()).getValues();
+  let existingGameIdList = existingGames.map(row => row[0]).flat();
+
+  // Loop by year
+  for (let year = startYear; year <= thisYear; year++) {
+
+    console.log(year);
+
+    // Find teams that are active in that year
+    let activeTeamList = new Array();
+
+    for (let i in teamList) {
+      let activeTeam = teamList[i];
+      let activeTeamName = activeTeam[0];
+      let activeTeamId = activeTeam[1];
+      let activeTeamStartYear = activeTeam[2];
+      if (activeTeamStartYear <= year && activeTeamId) {
+        activeTeamList.push([activeTeamName,activeTeamId,activeTeamStartYear]);
+      };
+    };
+
+    // Loop API by team active in year
+    for (let t in activeTeamList) {
+      let team = activeTeamList[t];
+      let teamName = team[0];
+      let teamId = team[1];
+      let teamStartYear = team[2];
+
+      if (teamId && teamStartYear <= year) {
+        let games = getTeamGames(sportStub,teamName,teamId,activeTeamList,teamIdList,year,teamAbbrevList);
+        for (let j in games) {
+          let game = games[j];
+          let gameId = game.gameId;
+          let existingGame = existingGameIdList.indexOf(gameId) >= 0 ? existingGameIdList.indexOf(gameId) : false;
+          if (existingGame) {
+            existingGames[existingGame] = [game.gameId, game.season, game.date, game.homeTeam, game.awayTeam, game.homeScore, game.awayScore, game.winner, game.loser, game.matchup, game.note]
+          } else {
+            existingGames.push([game.gameId, game.season, game.date, game.homeTeam, game.awayTeam, game.homeScore, game.awayScore, game.winner, game.loser, game.matchup, game.note]);
+            existingGameIdList.push(game.gameId)
+          };
+        };
+      }; // end active team
+    }; // end team list
+  }; // end year loop
+
+  existingGames.sort((a,b) =>  a[2] - b[2]);
+  existingGames.filter(thisRow => {
+    let duplicate = false;
+    let thisId = thisRow[0];
+    for (let i in existingGames) {
+      let thatRow = existingGames[i];
+      let thatId = thatRow[0];
+      let thatScore = thatRow[5];
+      if (thisId == thatId) {
+        duplicate = true;
+        if (thatScore != null) {
+          return thatRow;
+        };
+      };
+    };
+    if (duplicate) {
+      return thisRow;
+    }
+  });
+
+  scoreSheet.getRange(2,1,existingGames.length,existingGames[0].length).setValues(existingGames);
+}
+
+function multiDimensionalUnique(arr) {
+    var uniques = [];
+    var itemsFound = {};
+    for(var i = 0, l = arr.length; i < l; i++) {
+        var stringified = JSON.stringify(arr[i]);
+        if(itemsFound[stringified]) { continue; }
+        uniques.push(arr[i]);
+        itemsFound[stringified] = true;
+    }
+    return uniques;
+}
+
+
+function getTeamGames(sportStub,teamName,teamId,activeTeamList,teamIdList,year,teamAbbrevList) {
+
+
+  console.log(teamName);
+  let gameList = new Array();
+
+  for (let seasonType = 1; seasonType < 7; seasonType++) {
+    
+    let url = `${sportStub}teams/${teamId}/schedule?seasontype=${seasonType}&season=${year}`
+    let response = UrlFetchApp.fetch(url, { 'muteHttpExceptions': true });
+    let json = response.getContentText();
+    let data = JSON.parse(json);
+
+    let games = data.events;
+
+    if (!games) { return };
+    
+    // Loop by games in season
+    for (let g in games) {
+
+      // Grab opponent ID: [0] if home team, [1] if away
+      let game = games[g].competitions[0];
+      let competitors = game.competitors;
+      let opponentId = competitors[0].id != teamId ? competitors[0].id : competitors[1].id
+
+      // Verify if opponent is in RAthCon
+      let inRathCon = false;
+      for (let a in activeTeamList) {
+        if (opponentId == activeTeamList[a][1]) {
+          inRathCon = true;
+        };
+      };
+
+      // If in RAthCon, grab game ID, date, teams, and score
+      if (inRathCon) {
+        let gameId = game.id;
+        let season = year + '-' + (+year+1);
+        let date = new Date(game.date);
+        let homeTeamId = game.competitors[0].team.id;
+        let homeTeam,awayTeam;
+        for (let j in teamIdList) {
+          if (teamIdList[j][0] == homeTeamId) {
+            homeTeam = teamAbbrevList[j][0];
+          };
+        };
+        let awayTeamId = game.competitors[1].team.id;
+        for (let j in teamIdList) {
+          if (teamIdList[j][0] == awayTeamId) {
+            awayTeam = teamAbbrevList[j][0];
+          };
+        };
+        
+        let homeScore,awayScore;
+
+        if (date < new Date()) {
+          homeScore = game.competitors[0].score.value;
+          awayScore = game.competitors[1].score.value;
+        };
+
+        // Determine winner, loser, and series
+
+        let winner,loser;
+
+        if (homeScore > awayScore) {
+          winner = homeTeam;
+          loser = awayTeam;
+        }
+        else if (homeScore < awayScore) {
+          winner = awayTeam;
+          loser = homeTeam;
+        }
+
+        let matchup = [homeTeam, awayTeam];
+        matchup.sort();
+        matchup = matchup.join('-');
+
+        let note = null;
+        if (seasonType == 1) {note = 'Pre-season'}
+        else if (seasonType == 3) {note = 'Post-season'};
+
+        let indivGameData = new Game(gameId, season, date, homeTeam, awayTeam, homeScore, awayScore, winner, loser, matchup, note);
+        gameList.push(indivGameData);
+
+      }; // end inRathCon
+    }; // end game loop
+  }; // end seasonType loop
+  return gameList;
+  
+}
